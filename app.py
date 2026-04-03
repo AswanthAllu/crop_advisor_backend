@@ -6,6 +6,10 @@ import os
 import pandas as pd
 import numpy as np
 
+# Added these two imports to fix the Render/Gunicorn bug!
+import sys
+import __main__
+
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.svm import SVC
@@ -43,6 +47,13 @@ class RF_DT_SVM_Cascade:
         s2_probs = self.stage2.predict_proba(X_s2)
         X_s3 = np.column_stack((X, s2_probs))
         return self.stage3.predict(X_s3)
+
+# =====================================================================
+# THE RENDER FIX: Copy the class into the __main__ namespace for joblib
+# =====================================================================
+setattr(sys.modules['__main__'], 'RF_DT_SVM_Cascade', RF_DT_SVM_Cascade)
+__main__.RF_DT_SVM_Cascade = RF_DT_SVM_Cascade
+# =====================================================================
 
 app = Flask(__name__)
 
