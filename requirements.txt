@@ -4,3 +4,5 @@ scikit-learn
 pyserial
 requests
 gunicorn
+SMOTE
+imblearn

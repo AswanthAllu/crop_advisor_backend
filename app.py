@@ -3,16 +3,65 @@ import requests
 import datetime
 import joblib
 import os
+import pandas as pd
+import numpy as np
+
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.svm import SVC
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
+
+class RF_DT_SVM_Cascade:
+    def __init__(self):
+        self.stage1 = RandomForestClassifier(
+            n_estimators=400, max_depth=None, random_state=42, n_jobs=-1, class_weight='balanced'
+        )
+        self.stage2 = DecisionTreeClassifier(
+            max_depth=None, min_samples_split=5, min_samples_leaf=2,
+            random_state=42, class_weight='balanced'
+        )
+        self.stage3 = Pipeline([
+            ('scaler', StandardScaler()),
+            ('svm', SVC(kernel='rbf', probability=True, C=1000, gamma='scale', random_state=42))
+        ])
+
+    def fit(self, X, y):
+        self.stage1.fit(X, y)
+        s1_probs = self.stage1.predict_proba(X)
+        X_s2 = np.column_stack((X, s1_probs))
+        
+        self.stage2.fit(X_s2, y)
+        s2_probs = self.stage2.predict_proba(X_s2)
+        X_s3 = np.column_stack((X, s2_probs))
+        
+        self.stage3.fit(X_s3, y)
+
+    def predict(self, X):
+        s1_probs = self.stage1.predict_proba(X)
+        X_s2 = np.column_stack((X, s1_probs))
+        s2_probs = self.stage2.predict_proba(X_s2)
+        X_s3 = np.column_stack((X, s2_probs))
+        return self.stage3.predict(X_s3)
 
 app = Flask(__name__)
 
 model_path = 'crop_model.pkl'
 model = None
+le = None
+poly = None
+
 if os.path.exists(model_path):
     try:
-        model = joblib.load(model_path)
-    except:
-        pass
+        artifacts = joblib.load(model_path)
+        model = artifacts["model"]
+        le = artifacts["encoder"]
+        poly = artifacts["poly"]
+        print("Model loaded successfully!")
+    except Exception as e:
+        print(f"Failed to load model: {e}")
+else:
+    print(f"Could not find {model_path}")
 
 sensor_data = {
     "temp": 0,
@@ -75,11 +124,13 @@ def get_address_details(lat, lon):
         area = addr.get('village') or addr.get('town') or addr.get('city_district') or addr.get('county') or "Unknown Area"
         state = addr.get('state', '')
         full_address = f"{area}, {state}"
+        
         raw_display = resp.get('display_name', '').lower()
         if any(x in raw_display for x in ['street', 'road', 'lane', 'nagar', 'colony', 'apartment']):
             land_type = "Urban / Non-Cultivated"
         else:
             land_type = "Agricultural / Open Land"
+            
         return full_address, land_type
     except:
         return "Unknown Location", "Unknown"
@@ -123,39 +174,42 @@ def get_prediction():
     if model_rain > 250:
         model_rain = 250.0
 
-    features = [[
-        sensor_data['temp'],
-        sensor_data['humidity'],
-        sensor_data['ph'],
-        model_rain
-    ]]
-
     prediction = "Waiting..."
-    if model:
+    
+    if model and poly and le:
         try:
-            prediction = model.predict(features)[0]
-        except:
+            raw_data = pd.DataFrame(
+                [[sensor_data['temp'], sensor_data['humidity'], sensor_data['ph'], model_rain]], 
+                columns=['temperature', 'humidity', 'ph', 'rainfall']
+            )
+            
+            poly_data = poly.transform(raw_data)
+            pred_code = model.predict(poly_data)[0]
+            prediction = le.inverse_transform([pred_code])[0].capitalize()
+            
+        except Exception as e:
+            print(f"Prediction error: {e}")
             prediction = "Error"
     else:
-        prediction = "Maize" if model_rain < 100 else "Coffee"
+        prediction = "Model Offline"
 
     alert_msg = ""
     alert_level = "normal"
-
+    
     required_moisture = CROP_NEEDS.get(prediction, 30)
     current_moisture = sensor_data['soil_moisture']
 
-    if prediction not in ["Waiting...", "Error"]:
+    if prediction not in ["Waiting...", "Error", "Model Offline"]:
         if current_moisture < required_moisture:
             gap = required_moisture - current_moisture
             if gap > 20:
                 alert_level = "critical"
-                alert_msg = f"⚠️ CRITICAL: Soil too dry for {prediction}! Irrigate immediately."
+                alert_msg = f"CRITICAL: Soil too dry for {prediction}!"
             else:
                 alert_level = "warning"
-                alert_msg = f"💧 LOW WATER: {prediction} needs moisture."
+                alert_msg = f"LOW WATER: {prediction} needs moisture."
         else:
-            alert_msg = f"✅ Moisture Optimal for {prediction}"
+            alert_msg = f"Moisture Optimal for {prediction}"
 
     display_data = sensor_data.copy()
     display_data["annual_rain"] = round(model_rain, 1)
