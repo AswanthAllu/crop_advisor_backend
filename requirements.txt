@@ -1,8 +1,7 @@
-Flask
-numpy
+Flask==3.0.0
+requests==2.31.0
+joblib
+pandas
+numpy>=2.0.0
 scikit-learn
-pyserial
-requests
-gunicorn
-SMOTE
-imblearn
+gunicorn==21.2.0
